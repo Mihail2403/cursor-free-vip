@@ -649,76 +649,40 @@ class MachineIDResetter:
             print(f"{Fore.CYAN}{EMOJI['INFO']} {self.translator.get('reset.updating_system_ids')}...{Style.RESET_ALL}")
             
             if sys.platform.startswith("win"):
-                self._update_windows_machine_guid()
-                self._update_windows_machine_id()
+                # For Windows, use user-level registry instead of system-level
+                try:
+                    import winreg
+                    # Use HKEY_CURRENT_USER instead of HKEY_LOCAL_MACHINE
+                    key = winreg.CreateKey(
+                        winreg.HKEY_CURRENT_USER,
+                        r"Software\Cursor\MachineIds"
+                    )
+                    new_guid = str(uuid.uuid4())
+                    winreg.SetValueEx(key, "MachineGuid", 0, winreg.REG_SZ, new_guid)
+                    winreg.CloseKey(key)
+                    
+                    # Create user-level SQMClient key
+                    key = winreg.CreateKey(
+                        winreg.HKEY_CURRENT_USER,
+                        r"Software\Microsoft\SQMClient"
+                    )
+                    new_guid = "{" + str(uuid.uuid4()).upper() + "}"
+                    winreg.SetValueEx(key, "MachineId", 0, winreg.REG_SZ, new_guid)
+                    winreg.CloseKey(key)
+                    
+                    print(f"{Fore.GREEN}{EMOJI['SUCCESS']} {self.translator.get('reset.windows_machine_id_updated')}{Style.RESET_ALL}")
+                except Exception as e:
+                    print(f"{Fore.YELLOW}{EMOJI['WARNING']} {self.translator.get('reset.windows_update_warning', error=str(e))}{Style.RESET_ALL}")
+                    
             elif sys.platform == "darwin":
                 self._update_macos_platform_uuid(new_ids)
                 
             print(f"{Fore.GREEN}{EMOJI['SUCCESS']} {self.translator.get('reset.system_ids_updated')}{Style.RESET_ALL}")
             return True
+            
         except Exception as e:
             print(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.system_ids_update_failed', error=str(e))}{Style.RESET_ALL}")
             return False
-
-    def _update_windows_machine_guid(self):
-        """Update Windows MachineGuid"""
-        try:
-            import winreg
-            key = winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE,
-                "SOFTWARE\\Microsoft\\Cryptography",
-                0,
-                winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY
-            )
-            new_guid = str(uuid.uuid4())
-            winreg.SetValueEx(key, "MachineGuid", 0, winreg.REG_SZ, new_guid)
-            winreg.CloseKey(key)
-            print(f"{Fore.GREEN}{EMOJI['SUCCESS']} {self.translator.get('reset.windows_machine_guid_updated')}{Style.RESET_ALL}")
-        except PermissionError as e:
-            print(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.permission_denied', error=str(e))}{Style.RESET_ALL}")
-            raise
-        except Exception as e:
-            print(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.update_windows_machine_guid_failed', error=str(e))}{Style.RESET_ALL}")
-            raise
-    
-    def _update_windows_machine_id(self):
-        """Update Windows MachineId in SQMClient registry"""
-        try:
-            import winreg
-            # 1. Generate new GUID
-            new_guid = "{" + str(uuid.uuid4()).upper() + "}"
-            print(f"{Fore.CYAN}{EMOJI['INFO']} {self.translator.get('reset.new_machine_id')}: {new_guid}{Style.RESET_ALL}")
-            
-            # 2. Open the registry key
-            try:
-                key = winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    r"SOFTWARE\Microsoft\SQMClient",
-                    0,
-                    winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY
-                )
-            except FileNotFoundError:
-                # If the key does not exist, create it
-                key = winreg.CreateKey(
-                    winreg.HKEY_LOCAL_MACHINE,
-                    r"SOFTWARE\Microsoft\SQMClient"
-                )
-            
-            # 3. Set MachineId value
-            winreg.SetValueEx(key, "MachineId", 0, winreg.REG_SZ, new_guid)
-            winreg.CloseKey(key)
-            
-            print(f"{Fore.GREEN}{EMOJI['SUCCESS']} {self.translator.get('reset.windows_machine_id_updated')}{Style.RESET_ALL}")
-            return True
-            
-        except PermissionError:
-            print(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.permission_denied')}{Style.RESET_ALL}")
-            print(f"{Fore.YELLOW}{EMOJI['WARNING']} {self.translator.get('reset.run_as_admin')}{Style.RESET_ALL}")
-            return False
-        except Exception as e:
-            print(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.update_windows_machine_id_failed', error=str(e))}{Style.RESET_ALL}")
-            return False
-                    
 
     def _update_macos_platform_uuid(self, new_ids):
         """Update macOS Platform UUID"""
@@ -733,8 +697,47 @@ class MachineIDResetter:
                 else:
                     raise Exception(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.failed_to_execute_plutil_command')}{Style.RESET_ALL}")
         except Exception as e:
-            print(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.update_macos_platform_uuid_failed', error=str(e))}{Style.RESET_ALL}")
+            print(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.system_ids_update_failed', error=str(e))}{Style.RESET_ALL}")
             raise
+
+    def update_machine_id_file(self, machine_id: str) -> bool:
+        """
+        Update machineId file with new machine_id
+        Args:
+            machine_id (str): New machine ID to write
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Get the machineId file path
+            machine_id_path = get_cursor_machine_id_path()
+            
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(machine_id_path), exist_ok=True)
+
+            # Create backup if file exists
+            if os.path.exists(machine_id_path):
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_path = f"{machine_id_path}.backup.{timestamp}"
+                try:
+                    shutil.copy2(machine_id_path, backup_path)
+                    print(f"{Fore.GREEN}{EMOJI['INFO']} {self.translator.get('reset.backup_created', path=backup_path) if self.translator else f'Backup created at: {backup_path}'}{Style.RESET_ALL}")
+                except Exception as e:
+                    print(f"{Fore.YELLOW}{EMOJI['INFO']} {self.translator.get('reset.backup_creation_failed', error=str(e)) if self.translator else f'Could not create backup: {str(e)}'}{Style.RESET_ALL}")
+
+            # Write new machine ID to file
+            with open(machine_id_path, "w", encoding="utf-8") as f:
+                f.write(machine_id)
+
+            print(f"{Fore.GREEN}{EMOJI['SUCCESS']} {self.translator.get('reset.update_success') if self.translator else 'Successfully updated machineId file'}{Style.RESET_ALL}")
+            return True
+
+        except Exception as e:
+            error_msg = f"Failed to update machineId file: {str(e)}"
+            if self.translator:
+                error_msg = self.translator.get('reset.update_failed', error=str(e))
+            print(f"{Fore.RED}{EMOJI['ERROR']} {error_msg}{Style.RESET_ALL}")
+            return False
 
     def reset_machine_ids(self):
         """Reset machine ID and backup original file"""
@@ -774,13 +777,11 @@ class MachineIDResetter:
             # Update system IDs
             self.update_system_ids(new_ids)
 
-
             # Modify workbench.desktop.main.js
             workbench_path = get_workbench_cursor_path(self.translator)
             modify_workbench_js(workbench_path, self.translator)
 
             # Check Cursor version and perform corresponding actions
-            
             greater_than_0_45 = check_cursor_version(self.translator)
             if greater_than_0_45:
                 print(f"{Fore.CYAN}{EMOJI['INFO']} {self.translator.get('reset.detecting_version')} >= 0.45.0，{self.translator.get('reset.patching_getmachineid')}{Style.RESET_ALL}")
@@ -801,45 +802,6 @@ class MachineIDResetter:
             return False
         except Exception as e:
             print(f"{Fore.RED}{EMOJI['ERROR']} {self.translator.get('reset.process_error', error=str(e))}{Style.RESET_ALL}")
-            return False
-
-    def update_machine_id_file(self, machine_id: str) -> bool:
-        """
-        Update machineId file with new machine_id
-        Args:
-            machine_id (str): New machine ID to write
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            # Get the machineId file path
-            machine_id_path = get_cursor_machine_id_path()
-            
-            # Create directory if it doesn't exist
-            os.makedirs(os.path.dirname(machine_id_path), exist_ok=True)
-
-            # Create backup if file exists
-            if os.path.exists(machine_id_path):
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_path = f"{machine_id_path}.backup.{timestamp}"
-                try:
-                    shutil.copy2(machine_id_path, backup_path)
-                    print(f"{Fore.GREEN}{EMOJI['INFO']} {self.translator.get('reset.backup_created', path=backup_path) if self.translator else f'Backup created at: {backup_path}'}{Style.RESET_ALL}")
-                except Exception as e:
-                    print(f"{Fore.YELLOW}{EMOJI['INFO']} {self.translator.get('reset.backup_creation_failed', error=str(e)) if self.translator else f'Could not create backup: {str(e)}'}{Style.RESET_ALL}")
-
-            # Write new machine ID to file
-            with open(machine_id_path, "w", encoding="utf-8") as f:
-                f.write(machine_id)
-
-            print(f"{Fore.GREEN}{EMOJI['SUCCESS']} {self.translator.get('reset.update_success') if self.translator else 'Successfully updated machineId file'}{Style.RESET_ALL}")
-            return True
-
-        except Exception as e:
-            error_msg = f"Failed to update machineId file: {str(e)}"
-            if self.translator:
-                error_msg = self.translator.get('reset.update_failed', error=str(e))
-            print(f"{Fore.RED}{EMOJI['ERROR']} {error_msg}{Style.RESET_ALL}")
             return False
 
 def run(translator=None):
